@@ -1,12 +1,12 @@
 import express from "express";
-import { google } from "googleapis";
 import cors from "cors";
+import { google } from "googleapis";
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 讀取 Service Account JSON
+// 讀取 Service Account JSON（Zeabur 的環境變數）
 const serviceAccount = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY);
 
 // Google Auth
@@ -15,99 +15,93 @@ const auth = new google.auth.GoogleAuth({
   scopes: ["https://www.googleapis.com/auth/spreadsheets"],
 });
 
-// Sheets API
+// Google Sheets 客戶端
 const sheets = google.sheets({ version: "v4", auth });
 
-// Google Sheet ID
+// Google Sheet ID（環境變數）
 const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
 
-// 工作表名稱（你可以改）
-const SHEET_NAME = "carpool-data";
+// 工作表名稱
+const SHEET_NAME = "工作表1";
 
-
-// 1️⃣ 取得名單（所有欄位）
+// 取得名單列表 -----------------------------------------
 app.get("/list", async (req, res) => {
   try {
-    const read = await sheets.spreadsheets.values.get({
+    const response = await sheets.spreadsheets.values.get({
       spreadsheetId: SPREADSHEET_ID,
-      range: `${SHEET_NAME}!A1:Z100`,
+      range: `${SHEET_NAME}!A2:E1000`,  // 從第 2 列開始讀資料
     });
 
-    const values = read.data.values || [];
+    const rows = response.data.values || [];
 
-    // 轉置：把每一欄視為一個時段
-    const columns = [];
-    const maxCol = values[0]?.length || 5;
+    // 轉成符合前端的格式：5 欄陣列
+    const columns = [[], [], [], [], []];
 
-    for (let c = 0; c < maxCol; c++) {
-      const colData = [];
-      for (let r = 0; r < values.length; r++) {
-        if (values[r][c]) colData.push(values[r][c]);
+    rows.forEach((row) => {
+      for (let i = 0; i < 5; i++) {
+        if (row[i]) columns[i].push(row[i]);
       }
-      columns.push(colData);
-    }
+    });
 
     res.json(columns);
-  } catch (err) {
-    console.error("讀取錯誤:", err);
+  } catch (error) {
+    console.error("讀取錯誤：", error);
     res.status(500).json({ error: "讀取試算表失敗" });
   }
 });
 
-
-// 2️⃣ 新增姓名到指定欄位
+// 新增姓名 ----------------------------------------------
 app.post("/add", async (req, res) => {
   const { columnIndex, name } = req.body;
 
-  if (!name) return res.status(400).json({ error: "姓名不能為空" });
-
-  const colLetter = String.fromCharCode(65 + columnIndex); // A=0 B=1…
+  if (columnIndex === undefined || !name) {
+    return res.status(400).json({ error: "缺少欄位或姓名" });
+  }
 
   try {
+    const colLetter = String.fromCharCode(65 + columnIndex); // 0→A, 1→B...
+
     await sheets.spreadsheets.values.append({
       spreadsheetId: SPREADSHEET_ID,
-      range: `${SHEET_NAME}!${colLetter}1`,
+      range: `${SHEET_NAME}!${colLetter}2`,
       valueInputOption: "RAW",
       requestBody: {
         values: [[name]],
       },
     });
 
-    res.json({ status: "success" });
-  } catch (err) {
-    console.error("新增錯誤:", err);
-    res.status(500).json({ error: "寫入失敗" });
+    res.json({ status: "success", message: "新增成功" });
+  } catch (error) {
+    console.error("新增錯誤：", error);
+    res.status(500).json({ error: "新增失敗" });
   }
 });
 
-
-// 3️⃣ 刪除指定欄、指定列
+// 刪除姓名 ----------------------------------------------
 app.post("/delete", async (req, res) => {
   const { columnIndex, rowIndex } = req.body;
 
-  const colLetter = String.fromCharCode(65 + columnIndex);
-  const row = rowIndex + 1;
-
   try {
+    const colLetter = String.fromCharCode(65 + columnIndex); // A-E
+    const targetRow = rowIndex + 2; // 因為資料從第 2 列開始
+
     await sheets.spreadsheets.values.update({
       spreadsheetId: SPREADSHEET_ID,
-      range: `${SHEET_NAME}!${colLetter}${row}`,
+      range: `${SHEET_NAME}!${colLetter}${targetRow}`,
       valueInputOption: "RAW",
-      requestBody: { values: [[""]] },
+      requestBody: {
+        values: [[""]], // 清空該格
+      },
     });
 
-    res.json({ status: "success" });
-  } catch (err) {
-    console.error("刪除錯誤:", err);
+    res.json({ status: "success", message: "刪除成功" });
+  } catch (error) {
+    console.error("刪除錯誤：", error);
     res.status(500).json({ error: "刪除失敗" });
   }
 });
 
-
-// 啟動伺服器
+// 啟動伺服器 ----------------------------------------------
 const port = process.env.PORT || 3000;
-app.listen(port, () => {
-  console.log("後端運作中，port =", port);
-});
-
+app.listen(port, () => console.log("Server running on port " + port));
 
