@@ -6,102 +6,116 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 讀取 Service Account JSON（Zeabur 的環境變數）
-const serviceAccount = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY);
+/** -------------------------
+ * 1. 載入 Google Service Account
+ --------------------------*/
+let serviceAccount;
+try {
+  serviceAccount = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY);
+} catch (err) {
+  console.error("❌ GOOGLE_SERVICE_ACCOUNT_KEY 解析失敗！");
+}
 
-// Google Auth
 const auth = new google.auth.GoogleAuth({
   credentials: serviceAccount,
   scopes: ["https://www.googleapis.com/auth/spreadsheets"],
 });
 
-// Google Sheets 客戶端
 const sheets = google.sheets({ version: "v4", auth });
 
-// Google Sheet ID（環境變數）
+/** -------------------------
+ * 2. 試算表設定
+ --------------------------*/
 const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
+const RANGE = "工作表1!A1:Z100";  // ← 你要求放這裡
 
-// 工作表名稱
-const SHEET_NAME = "工作表1";
-
-// 取得名單列表 -----------------------------------------
+/** -------------------------
+ * 3. 讀取 Google Sheet（前端用）
+ --------------------------*/
 app.get("/list", async (req, res) => {
   try {
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId: SPREADSHEET_ID,
-      range: `${SHEET_NAME}!A2:E1000`,  // 從第 2 列開始讀資料
+      range: RANGE,
     });
 
-    const rows = response.data.values || [];
+    const values = response.data.values || [];
 
-    // 轉成符合前端的格式：5 欄陣列
+    // 將資料轉換成每欄陣列，例如：
+    // [
+    //   ["小明","小華"],
+    //   ["小美"],
+    //   []
+    // ]
     const columns = [[], [], [], [], []];
-
-    rows.forEach((row) => {
-      for (let i = 0; i < 5; i++) {
-        if (row[i]) columns[i].push(row[i]);
-      }
-    });
+    for (let row of values.slice(1)) {
+      row.forEach((name, index) => {
+        if (name && index < 5) columns[index].push(name);
+      });
+    }
 
     res.json(columns);
   } catch (error) {
-    console.error("讀取錯誤：", error);
+    console.error("❌ 讀取 Google Sheets 失敗：", error);
     res.status(500).json({ error: "讀取試算表失敗" });
   }
 });
 
-// 新增姓名 ----------------------------------------------
+/** -------------------------
+ * 4. 新增姓名（寫入 Google Sheet）
+ --------------------------*/
 app.post("/add", async (req, res) => {
   const { columnIndex, name } = req.body;
 
-  if (columnIndex === undefined || !name) {
-    return res.status(400).json({ error: "缺少欄位或姓名" });
-  }
+  if (columnIndex < 0 || columnIndex > 4)
+    return res.status(400).json({ error: "columnIndex 無效" });
+
+  const column = ["A", "B", "C", "D", "E"][columnIndex];
 
   try {
-    const colLetter = String.fromCharCode(65 + columnIndex); // 0→A, 1→B...
-
     await sheets.spreadsheets.values.append({
       spreadsheetId: SPREADSHEET_ID,
-      range: `${SHEET_NAME}!${colLetter}2`,
+      range: `工作表1!${column}1`,
       valueInputOption: "RAW",
       requestBody: {
         values: [[name]],
       },
     });
 
-    res.json({ status: "success", message: "新增成功" });
+    res.json({ status: "success" });
   } catch (error) {
-    console.error("新增錯誤：", error);
-    res.status(500).json({ error: "新增失敗" });
+    console.error("❌ 新增失敗：", error);
+    res.status(500).json({ error: "寫入資料失敗" });
   }
 });
 
-// 刪除姓名 ----------------------------------------------
+/** -------------------------
+ * 5. 刪除姓名（清空特定儲存格）
+ --------------------------*/
 app.post("/delete", async (req, res) => {
   const { columnIndex, rowIndex } = req.body;
 
-  try {
-    const colLetter = String.fromCharCode(65 + columnIndex); // A-E
-    const targetRow = rowIndex + 2; // 因為資料從第 2 列開始
+  const column = ["A", "B", "C", "D", "E"][columnIndex];
 
+  try {
     await sheets.spreadsheets.values.update({
       spreadsheetId: SPREADSHEET_ID,
-      range: `${SHEET_NAME}!${colLetter}${targetRow}`,
+      range: `工作表1!${column}${rowIndex + 2}`,
       valueInputOption: "RAW",
-      requestBody: {
-        values: [[""]], // 清空該格
-      },
+      requestBody: { values: [[""]] },
     });
 
-    res.json({ status: "success", message: "刪除成功" });
+    res.json({ status: "success" });
   } catch (error) {
-    console.error("刪除錯誤：", error);
-    res.status(500).json({ error: "刪除失敗" });
+    console.error("❌ 刪除失敗：", error);
+    res.status(500).json({ error: "刪除資料失敗" });
   }
 });
 
-// 啟動伺服器 ----------------------------------------------
+/** -------------------------
+ * 6. 啟動伺服器
+ --------------------------*/
 const port = process.env.PORT || 3000;
-app.listen(port, () => console.log("Server running on port " + port));
-
+app.listen(port, () => {
+  console.log("🚀 Server running on port", port);
+});
