@@ -1,6 +1,5 @@
-
 {
-  "name": "carpool-api"
+  "name": "carpool-api",
   "version": "1.0.0",
   "type": "module",
   "main": "index.js",
