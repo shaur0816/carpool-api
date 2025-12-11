@@ -6,63 +6,108 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 1️⃣ 從 Zeabur 的環境變數讀取 Service Account JSON
+// 讀取 Service Account JSON
 const serviceAccount = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY);
 
-// 2️⃣ 使用 Google Auth 進行授權
+// Google Auth
 const auth = new google.auth.GoogleAuth({
   credentials: serviceAccount,
   scopes: ["https://www.googleapis.com/auth/spreadsheets"],
 });
 
-// 3️⃣ Google Sheets 初始化
+// Sheets API
 const sheets = google.sheets({ version: "v4", auth });
 
-// 4️⃣ 你的 Google Sheet ID（也可改成環境變數）
+// Google Sheet ID
 const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
 
-// 🟩 測試 API：讀取試算表內容
-app.get("/rows", async (req, res) => {
+// 工作表名稱（你可以改）
+const SHEET_NAME = "carpool-data";
+
+
+// 1️⃣ 取得名單（所有欄位）
+app.get("/list", async (req, res) => {
   try {
-    const response = await sheets.spreadsheets.values.get({
+    const read = await sheets.spreadsheets.values.get({
       spreadsheetId: SPREADSHEET_ID,
-      range: "工作表1!A1:Z1000",
+      range: `${SHEET_NAME}!A1:Z100`,
     });
 
-    res.json({
-      status: "success",
-      data: response.data.values || [],
-    });
-  } catch (error) {
-    console.error("Google Sheets Error:", error);
-    res.status(500).json({ error: "Google Sheets 發生錯誤" });
+    const values = read.data.values || [];
+
+    // 轉置：把每一欄視為一個時段
+    const columns = [];
+    const maxCol = values[0]?.length || 5;
+
+    for (let c = 0; c < maxCol; c++) {
+      const colData = [];
+      for (let r = 0; r < values.length; r++) {
+        if (values[r][c]) colData.push(values[r][c]);
+      }
+      columns.push(colData);
+    }
+
+    res.json(columns);
+  } catch (err) {
+    console.error("讀取錯誤:", err);
+    res.status(500).json({ error: "讀取試算表失敗" });
   }
 });
 
-// 🟦 新增資料到 Google Sheets
+
+// 2️⃣ 新增姓名到指定欄位
 app.post("/add", async (req, res) => {
-  const { name, phone, from, to } = req.body;
+  const { columnIndex, name } = req.body;
+
+  if (!name) return res.status(400).json({ error: "姓名不能為空" });
+
+  const colLetter = String.fromCharCode(65 + columnIndex); // A=0 B=1…
 
   try {
     await sheets.spreadsheets.values.append({
       spreadsheetId: SPREADSHEET_ID,
-      range: "工作表1!A1",
+      range: `${SHEET_NAME}!${colLetter}1`,
       valueInputOption: "RAW",
       requestBody: {
-        values: [[name, phone, from, to, new Date().toLocaleString()]],
+        values: [[name]],
       },
     });
 
-    res.json({ status: "success", message: "資料已新增" });
-  } catch (error) {
-    console.error("寫入 Google Sheets 錯誤:", error);
-    res.status(500).json({ error: "無法寫入資料" });
+    res.json({ status: "success" });
+  } catch (err) {
+    console.error("新增錯誤:", err);
+    res.status(500).json({ error: "寫入失敗" });
   }
 });
 
-// 🟠 伺服器啟動
+
+// 3️⃣ 刪除指定欄、指定列
+app.post("/delete", async (req, res) => {
+  const { columnIndex, rowIndex } = req.body;
+
+  const colLetter = String.fromCharCode(65 + columnIndex);
+  const row = rowIndex + 1;
+
+  try {
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SPREADSHEET_ID,
+      range: `${SHEET_NAME}!${colLetter}${row}`,
+      valueInputOption: "RAW",
+      requestBody: { values: [[""]] },
+    });
+
+    res.json({ status: "success" });
+  } catch (err) {
+    console.error("刪除錯誤:", err);
+    res.status(500).json({ error: "刪除失敗" });
+  }
+});
+
+
+// 啟動伺服器
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
-  console.log(`Server is running on port ${port}`);
+  console.log("後端運作中，port =", port);
 });
+
 
