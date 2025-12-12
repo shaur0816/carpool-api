@@ -6,110 +6,124 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 1️⃣ 從環境變數讀取 Service Account JSON（Zeabur 版本）
-const serviceAccount = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY);
+/** -------------------------
+ * 1. 載入 Google Service Account
+ --------------------------*/
+let serviceAccount;
+try {
+  serviceAccount = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY);
+} catch (err) {
+  console.error("❌ GOOGLE_SERVICE_ACCOUNT_KEY 解析失敗！");
+}
 
 const auth = new google.auth.GoogleAuth({
   credentials: serviceAccount,
   scopes: ["https://www.googleapis.com/auth/spreadsheets"],
 });
 
-// 2️⃣ Google Sheets 客戶端
 const sheets = google.sheets({ version: "v4", auth });
 
-// 3️⃣ 你的試算表 ID
+/** -------------------------
+ * 2. 試算表設定
+ --------------------------*/
 const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
+const RANGE = "工作表1!A1:Z100";
 
-// 4️⃣ 工作表名稱（固定用你的「工作表1」）
-const RANGE = "工作表1!A1:E100"; 
-// A~E 五欄 = 五個時段
-
-/* ------------------------------------------
-   🟩 GET /list   → 取得全部登記資料
--------------------------------------------*/
+/** -------------------------
+ * 3. 讀取 Google Sheet（前端用）
+ * 🔥 重點：永遠跳過 Sheets 第 1 列（標題列）
+ * 🔥 第 0 列 = Google Sheet 第 2 列（完全對齊）
+ --------------------------*/
 app.get("/list", async (req, res) => {
   try {
-    const result = await sheets.spreadsheets.values.get({
+    const response = await sheets.spreadsheets.values.get({
       spreadsheetId: SPREADSHEET_ID,
       range: RANGE,
     });
 
-    const rows = result.data.values || [];
+    const values = response.data.values || [];
 
-    // 轉成前端需要的格式：五個 Array
+    // 🔥 跳過第一列（標題列），只取人名
+    const rows = values.slice(1);
+
+    // 建立 5 個欄位
     const columns = [[], [], [], [], []];
 
     rows.forEach((row) => {
-      row.forEach((name, colIndex) => {
-        if (name && columns[colIndex]) {
-          columns[colIndex].push(name);
+      row.forEach((name, col) => {
+        if (name && col < 5) {
+          columns[col].push(name.trim());
         }
       });
     });
 
     res.json(columns);
-  } catch (err) {
-    console.error("GET /list error:", err);
-    res.status(500).json({ error: "無法讀取 Google Sheet" });
+  } catch (error) {
+    console.error("❌ 讀取試算表失敗：", error);
+    res.status(500).json({ error: "讀取試算表失敗" });
   }
 });
 
-/* ------------------------------------------
-   🟦 POST /add    → 新增一筆資料
--------------------------------------------*/
+/** -------------------------
+ * 4. 新增姓名（寫入 Google Sheet）
+ * 🔥 新增到 Google Sheet 的「最後一列」
+ --------------------------*/
 app.post("/add", async (req, res) => {
   const { columnIndex, name } = req.body;
 
-  if (columnIndex === undefined || !name) {
-    return res.status(400).json({ error: "缺少 columnIndex 或 name" });
-  }
+  if (columnIndex < 0 || columnIndex > 4)
+    return res.status(400).json({ error: "columnIndex 無效" });
+
+  const column = ["A", "B", "C", "D", "E"][columnIndex];
 
   try {
-    // 找該欄資料的下一列
-    const colLetter = String.fromCharCode(65 + columnIndex); // A,B,C,D,E
-    const range = `工作表1!${colLetter}:${colLetter}`;
-
     await sheets.spreadsheets.values.append({
       spreadsheetId: SPREADSHEET_ID,
-      range,
+      range: `工作表1!${column}2`,
       valueInputOption: "RAW",
+      insertDataOption: "INSERT_ROWS",
       requestBody: {
         values: [[name]],
       },
     });
 
     res.json({ status: "success" });
-  } catch (err) {
-    console.error("POST /add error:", err);
-    res.status(500).json({ error: "無法寫入 Google Sheet" });
+  } catch (error) {
+    console.error("❌ 新增失敗：", error);
+    res.status(500).json({ error: "寫入資料失敗" });
   }
 });
 
-/* ------------------------------------------
-   🟧 POST /delete → 刪除一筆資料
--------------------------------------------*/
+/** -------------------------
+ * 5. 刪除姓名
+ * 🔥 rowIndex = 前端的 idx（已修正，不再 -1）
+ * 🔥 Google Sheet 對應列 = rowIndex + 2
+ --------------------------*/
 app.post("/delete", async (req, res) => {
   const { columnIndex, rowIndex } = req.body;
 
-  try {
-    const colLetter = String.fromCharCode(65 + columnIndex);
-    const deleteRange = `工作表1!${colLetter}${rowIndex + 1}`;
+  const column = ["A", "B", "C", "D", "E"][columnIndex];
+  const targetRow = rowIndex + 2; // ← Google Sheet 列號（第 2 列開始是人名）
 
-    await sheets.spreadsheets.values.clear({
+  try {
+    await sheets.spreadsheets.values.update({
       spreadsheetId: SPREADSHEET_ID,
-      range: deleteRange,
+      range: `工作表1!${column}${targetRow}`,
+      valueInputOption: "RAW",
+      requestBody: { values: [[""]] },
     });
 
-    res.json({ status: "deleted" });
-  } catch (err) {
-    console.error("POST /delete error:", err);
+    res.json({ status: "success" });
+  } catch (error) {
+    console.error("❌ 刪除失敗：", error);
     res.status(500).json({ error: "刪除資料失敗" });
   }
 });
 
-/* ------------------------------------------ */
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`後端服務已啟動 at port ${PORT}`);
+/** -------------------------
+ * 6. 啟動伺服器（支援 Zeabur）
+ --------------------------*/
+const port = process.env.PORT || 3000;
+app.listen(port, () => {
+  console.log("🚀 Server running on port", port);
 });
